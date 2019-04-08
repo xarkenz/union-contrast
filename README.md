@@ -1,2 +1,3 @@
-# union-contrast
-UnionContrast, an image creator based in Python.
+# UnionContrast
+An image creator based in Python.
+
