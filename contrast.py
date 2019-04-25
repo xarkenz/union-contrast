@@ -7,6 +7,7 @@
 ##################################
 
 # app color: (106, 168, 79) or #6aa84f
+# 6AA650
 
 # Importing some modules (data.ucommons is local)
 import sys, os, math
@@ -25,7 +26,9 @@ PATH = os.path.dirname(os.path.abspath(__file__)) + "/"
 main = None
 zmax = 50
 zmin = 1
-tool = None
+zooms = {0:1, 1:2, 2:4, 3:8, 4:16, 5:32, 6:50}
+tkbuttons = []
+userDeactivatedButton = True
 
 # Simple internal setting getter
 def getSetting(name, defaultsto, rtype:type=str):
@@ -50,6 +53,7 @@ iconsize = getSetting("iconsize", 16, int)
 monofont = getSetting("monofont", "Monospace")
 opendir = getSetting("opendir", "~")
 zoomlevel = getSetting("zoomlevel", 1, float)
+tool = getSetting("tool", "crop")
 
 # Basic pixel class so the pixmaps aren't extremely cluttered
 class pixel:
@@ -69,12 +73,15 @@ class pixel:
 
 # Basic image class to store some info
 class image:
-    def __init__(self, pixmap:List[list], path):
+    def __init__(self, img, pixmap:List[list], path):
         self.h = len(pixmap)
         self.w = len(pixmap[0])
         self.pixmap = pixmap
+        self.img = img
         self.path = path
         self.name = path.split("/")[-1]
+    def setPixel(self, x:int, y:int, color):
+        self.pixmap[int(y)][int(x)] = pixel(color)
 
 # Load an image to memory
 def LoadImage(filename: str, form: str="png"):
@@ -86,13 +93,13 @@ def LoadImage(filename: str, form: str="png"):
             pixmap.append([])
             for i in range(img.size[0]):
                 pixmap[j].append(pixel(pix[i,j]))
-        return image(pixmap, filename)
+        return image(img, pixmap, filename)
     except Exception as e:
         print("Failed to load image (line %s, %s)" % (sys.exc_info()[2].tb_lineno, e))
         return None
 
 # Icon getter
-def GetIcon(name: str): return PATH + "data/icons/" + name + (".png" if os.path.isfile(PATH+"data/icons/"+name+".png") else ".svg")
+def GetIcon(name: str): return PATH + "data/icons/" + name + (".svg" if os.path.isfile(PATH+"data/icons/"+name+".svg") else ".png")
 
 # Simple ways of knowing what mode the file is in
 def inDraw(): return main.tabs.currentWidget() == main.drawCont
@@ -111,10 +118,14 @@ def SaveSettings():
     sv("monofont", monofont)
     sv("opendir", opendir)
     sv("zoomlevel", zoomlevel)
+    sv("tool", tool)
 
 class TKButton(QToolButton): # Basic class for a button in the toolkit (hence the 'tk')
-    def __init__(self, act: QAction, *args):
-        QPushButton.__init__(self, *args)
+    selected = pyqtSignal(str)
+    def __init__(self, name, act: QAction, *args):
+        super().__init__(*args)
+        global main, tkbuttons
+        self.name = name
         self.setStyleSheet("""
 QToolButton {background-color: #3d3d3d; border: none; border-radius: 3px; color: #f7f7f7; padding: 4px; font-family: %s;}
 QToolButton:pressed {background-color: #2d2d2d;}
@@ -129,7 +140,12 @@ QToolButton:checked {background-color: #2d2d2d;}
         #self.setGraphicsEffect(eff)
         if act.icon().isNull(): self.setText(act.text())
         self.setIcon(act.icon())
-        #self.toggled.connect(self.setTool)
+        self.toggled.connect(self.toggle)
+        tkbuttons.append(self)
+    def toggle(self, on):
+        global userDeactivatedButton
+        if on: self.selected.emit(self.name)
+        elif userDeactivatedButton: self.setChecked(True)
 
 class ToolButton(QToolButton): # Basic class for customized QToolButton
     def __init__(self, act: QAction):
@@ -137,36 +153,47 @@ class ToolButton(QToolButton): # Basic class for customized QToolButton
         self.triggered.connect(act.trigger)
         self.setDefaultAction(act)
 
-class Tools:
-    class Pen(enum): name="pen"; text="Pen"
-
-class PercentInput(QLineEdit): # Zoom input on toolbar
+class ZoomInput(QComboBox): # Zoom input on toolbar
     def __init__(self, value:float=None, pmin:float=1.0, pmax:float=1000.0):
-        QLineEdit.__init__(self)
-        if value is not None: self.setText(str(value))
+        super().__init__()
+        self.setEditable(True)
+        self.e = self.lineEdit()
+        if value is not None: self.e.setText(str(value))
         self.pmin = pmin; self.pmax = pmax
-        self.textChanged.connect(self.percentify)
-        self.editingFinished.connect(self.finished)
-        self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("""QLineEdit {color: #f7f7f7; background-color: #3d3d3d; border: none; border-radius: 3px; min-height: 24px; max-width: 48px; font-family: %s;}
-QLineEdit:disabled {background-color: #4d4d4d; color: #c7c7c7;}""" % fontfamily)
+        self.e.textChanged.connect(self.percentify)
+        self.update()
+        self.e.editingFinished.connect(self.changeEvent)
+        #self.activated.connect(self.clicked)
+        self.e.setAlignment(Qt.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.setStyleSheet("""QComboBox {color: #f7f7f7; background-color: #3d3d3d; border: none; border-radius: 3px;}
+QComboBox:disabled {background-color: #4d4d4d; color: #c7c7c7;}
+QComboBox:hover {background-color: #2d2d2d;}
+QLineEdit {border-radius: 3px; padding: 2px; font-family: %s;}
+QComboBox::drop-down {border: none;}
+QComboBox::down-arrow {image: url(data/icons/droparrow.svg);}
+QComboBox QAbstractItemView {background-color: #4d4d4d; border: none; border-radius: 3px; padding-top: 3px; padding-bottom: 3px; color: #f7f7f7; selection-background-color: #5d5d5d; selection-border: none;}""" % fontfamily)
+        self.addItems([str(i*100) for i in zooms.values()])
     @pyqtSlot(str)
     def percentify(self, text): # Filter text input (see breathe for more)
-        self.setText(br.rmNonNumerics(text))
+        self.e.setText(br.rmNonNumerics(text))
     @pyqtSlot()
-    def finished(self): # Handler event to update zooming
-        if float(self.text()) > self.pmax: self.setText(str(self.pmax))
-        elif float(self.text()) < self.pmin: self.setText(str(self.pmin))
-        main.Zoom = float(self.text()) / 100
+    def changeEvent(self, event=None): # Handler event to update zooming
+        if event is not None: super().changeEvent(event); event.accept()
+        if float(self.e.text()) > self.pmax: self.e.setText(str(self.pmax))
+        elif float(self.e.text()) < self.pmin: self.e.setText(str(self.pmin))
         main.update()
     def mousePressEvent(self, event): # Customized so the text selects all when clicked
-        self.selectAll()
+        super().mousePressEvent(event)
+        self.e.selectAll()
         event.accept()
     def update(self): # Custom update event
         val = main.Zoom * 100
         if type(val) == float:
             if val.is_integer(): val = int(val)
-        self.setText(str(val))
+        self.e.setText(str(val))
+    def sizeHint(self):
+        return QSize(64, 24)
 
 class LineNumberArea(QWidget): # Widget intended to contain the line numbers for EditorWidget
     def __init__(self, editor):
@@ -182,25 +209,32 @@ class EditorWidget(QPlainTextEdit): # Text editor
         super().__init__(*args)
         self.lineNumberArea = LineNumberArea(self)
         self.blockCountChanged.connect(self.updateLineNumberAreaWidth)
-        self.updateRequest.connect(self.updateLineNumberArea)
-        self.cursorPositionChanged.connect(self.highlightCurrentLine)
+        self.updateRequest.connect(self.update)
+        self.cursorPositionChanged.connect(self.update)
         self.updateLineNumberAreaWidth(0)
         self.setStyleSheet("color: #f7f7f7; font-family: Roboto Mono; background-color: #2d2d2d; border-radius: 3px; margin: 10px; padding: 3px;")
-        self.highlightCurrentLine()
+        self.cachepos = self.textCursor().position()
+        self.update()
     def lineNumberAreaWidth(self): # Gets the line number width based on number of digits
         digits = 1
         count = max(1, self.blockCount())
         while count >= 10:
             count /= 10
             digits += 1
-        space = 3 + self.fontMetrics().width('9') * digits
+        space = 10 + self.fontMetrics().width("0") * digits
         return space
     def updateLineNumberAreaWidth(self, _): # Updates width of the line numbers
         self.setViewportMargins(self.lineNumberAreaWidth(), 0, 0, 0)
-    def updateLineNumberArea(self, rect, dy): # Updates area of the line numbers
+    def update(self): # Updates area of the line numbers
+        dy = self.cachepos+self.textCursor().position()
+        rect = self.frameRect()
         if dy: self.lineNumberArea.scroll(0, dy)
         else: self.lineNumberArea.update(0, rect.y(), self.lineNumberArea.width(), rect.height())
         if rect.contains(self.viewport().rect()): self.updateLineNumberAreaWidth(0)
+        self.selections = []
+        self.highlightCurrentLine()
+        self.syntaxHighlight()
+        #self.setExtraSelections(self.selections) ### FIXME ###
     def resizeEvent(self, event): # Handles resizing of the QTextEdit
         super().resizeEvent(event)
         self.lineNumberArea.setGeometry(QRect(self.contentsRect().left(), self.contentsRect().top(), self.lineNumberAreaWidth(), self.contentsRect().height()))
@@ -222,16 +256,18 @@ class EditorWidget(QPlainTextEdit): # Text editor
             bottom = top + self.blockBoundingRect(block).height()
             blockNumber += 1
     def highlightCurrentLine(self): # Add a highlight effect to the current line
-        extraSelections = []
         if not self.isReadOnly():
             selection = QTextEdit.ExtraSelection()
-            lineColor = QColor.fromRgb(61,61,61)
-            selection.format.setBackground(lineColor)
+            selection.format.setBackground(QColor.fromRgb(61,61,61))
             selection.format.setProperty(QTextFormat.FullWidthSelection, True)
             selection.cursor = self.textCursor()
             selection.cursor.clearSelection()
-            extraSelections.append(selection)
-        self.setExtraSelections(extraSelections)
+            self.selections.append(selection)
+    def syntaxHighlight(self):
+        selection = QTextEdit.ExtraSelection()
+        selection.format.setForeground(QColor.fromRgb(0,255,0))
+        selection.cursor = self.textCursor()
+        self.selections.append(selection)
 
 class PixScene(QGraphicsScene): # The background of the drawing canvas (given to PixViewWidget)
     def __init__(self, *args):
@@ -248,6 +284,8 @@ class PixViewWidget(QGraphicsView): # The canvas for drawing
     def __init__(self, scene, parent):
         QGraphicsView.__init__(self, scene, parent)
         self.zoom = main.Zoom
+        self.vrect = QRect()
+        self.rect = QRect()
         self.dragging = False
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.setBackgroundBrush(QBrush(QColor.fromRgb(45,45,45)))
@@ -258,8 +296,15 @@ class PixViewWidget(QGraphicsView): # The canvas for drawing
         self.setVerticalScrollBar(self.YScrollBar)
         self.setHorizontalScrollBar(self.XScrollBar)
         self.currentobj = None
+    def getPixel(self, x, y):
+        if x > self.rect.x() and x < self.rect.x()+self.rect.width() and y > self.rect.y() and y < self.rect.y()+self.rect.width():
+            x, y = x-self.rect.x(), y-self.rect.y()
+            return (x//self.zoom, y//self.zoom)
+        else: return False
     def mousePressEvent(self, event): # starts dragging
         self.dragging = True
+        pos = main.view.mapToScene(event.x(), event.y())
+        self.hMouseDrag.emit(int(pos.x()), int(pos.y()))
         event.accept()
     def mouseMoveEvent(self, event): # keeps dragging
         pos = main.view.mapToScene(event.x(), event.y())
@@ -270,6 +315,7 @@ class PixViewWidget(QGraphicsView): # The canvas for drawing
         self.dragging = False
         event.accept()
     def drawForeground(self, painter, vrect): # Draw the actual image to edit
+        self.vrect = vrect
         Zoom = self.zoom
         drawLine = painter.drawLine
         drawRect = painter.drawRect
@@ -277,7 +323,8 @@ class PixViewWidget(QGraphicsView): # The canvas for drawing
         fillRect = painter.fillRect
         if main.loadedImage is not None: img, width, height = main.loadedImage, main.loadedImage.w, main.loadedImage.h
         else: img, width, height = None, defaultsize.width(), defaultsize.height()
-        rect = QRect((vrect.width()-width*Zoom)//2, (vrect.height()-height*Zoom)//2, defaultsize.width()*Zoom, defaultsize.height()*Zoom)
+        rect = QRect((vrect.width()-width*Zoom)//2, (vrect.height()-height*Zoom)//2, width*Zoom, height*Zoom)
+        self.rect = rect
         painter.setRenderHint(QPainter.Antialiasing)
         
         # Rounded border (below alpha layer)
@@ -388,6 +435,7 @@ class ContrastWindow(QMainWindow): # Main window for Contrast (yay)
         self.Zoom = zoomlevel
         self.loadedImage = None
         self.isdirty = current is None
+        self.color = (0,0,0,255)
 
         self.tkCol = 5
         self.showMaximized()
@@ -403,6 +451,7 @@ class ContrastWindow(QMainWindow): # Main window for Contrast (yay)
         self.scene.setItemIndexMethod(QGraphicsScene.NoIndex)
 
         self.view = PixViewWidget(self.scene, self)
+        self.view.hMouseDrag.connect(self.hDragging)
         self.view.centerOn(0,0) # this scrolls to the top left
         #self.view.XScrollBar.valueChanged.connect(self.XScrollChange)
         #self.view.YScrollBar.valueChanged.connect(self.YScrollChange)
@@ -425,12 +474,16 @@ class ContrastWindow(QMainWindow): # Main window for Contrast (yay)
         self.CreateAction("zoomin", self.hZmIn, "Zoom In", QKeySequence("Ctrl++"))
         self.CreateAction("zoomout", self.hZmOut, "Zoom Out", QKeySequence("Ctrl+-"))
         self.CreateAction("zoomfull", self.hZmFull, "Zoom Full", QKeySequence("Ctrl+1"))
+        self.CreateAction("grid", self.hGrid, "Toggle Grid", QKeySequence("Ctrl+G"), toggle=True)
         self.CreateAction("pref", self.hPref, "Preferences")
-        self.CreateTKAction(Tools.Pen)
+        self.CreateTKAction("pencil", "Pencil")
+        self.CreateTKAction("fill", "Fill")
+        self.CreateTKAction("crop", "Crop")
         
         for i, action in zip(range(len(self.tkactions)), self.tkactions.keys()):
-            self.tkLayout.addWidget(TKButton(self.tkactions[action]), math.ceil(i/self.tkCol), 5 if i%5 == 0 else i%5)
-        #6AA650
+            add = TKButton(action, self.tkactions[action])
+            add.selected.connect(self.SetTool)
+            self.tkLayout.addWidget(add, math.floor(i/self.tkCol), i%5)#5 if i%5 == 0 else i%5)
         
         menubar = self.menuBar()
         menubar.setObjectName("menubar")
@@ -443,7 +496,7 @@ QMenu {background-color: #4d4d4d; border: none; border-radius: 3px; color: #f7f7
 QMenu::item:selected {background-color: #5d5d5d;}
 QMenu::item:pressed {background-color: #3d3d3d;}
 QMenu::item:checked {background-color: #3d3d3d;}
-QMenu::icon:checked {border: none;}""" % (fontfamily, fontfamily))
+QMenu::separator {border: none; border-bottom: 2px solid #5d5d5d; background-color: transparent;}""" % (fontfamily, fontfamily))
 
         fm = menubar.addMenu("File")
         fm.addAction(self.actions["new"])
@@ -456,11 +509,13 @@ QMenu::icon:checked {border: none;}""" % (fontfamily, fontfamily))
         vm.addAction(self.actions["zoomin"])
         vm.addAction(self.actions["zoomout"])
         vm.addAction(self.actions["zoomfull"])
+        vm.addSeparator()
+        vm.addAction(self.actions["grid"])
         
         self.tb = self.addToolBar("Toolbar")
         self.tb.setObjectName("toolbar")
         self.tb.setMovable(False)
-        self.zoombar = PercentInput(self.Zoom * 100, zmin * 100, zmax * 100)
+        self.zoombar = ZoomInput(self.Zoom * 100, zmin * 100, zmax * 100)
         percent = QLabel("%")
         percent.setStyleSheet("color: #f7f7f7; font-family: %s;" % fontfamily)
 
@@ -475,16 +530,18 @@ QMenu::icon:checked {border: none;}""" % (fontfamily, fontfamily))
         self.tb.addWidget(percent)
         self.tb.addAction(self.actions["zoomfull"])
         self.tb.addSeparator()
+        self.tb.addAction(self.actions["grid"])
+        self.tb.addSeparator()
 
         self.tb.setStyleSheet("""QToolBar#toolbar {background-color: #4d4d4d; border: none; font-family: %s;}
 QToolButton {color: #f7f7f7; background-color: #4d4d4d; border: none; border-radius: 3px; font-family: %s; min-width: %s; height: %s; padding: 4px;}
 QToolButton:hover {background-color: #5d5d5d;}
 QToolButton:pressed {background-color: #3d3d3d;}
 QToolButton:disabled {color: #a7a7a7; background-color: #5d5d5d;}
-QToolBar::separator {max-width: 2px; border-left: 1px solid #5d5d5d; max-height: 16px; margin: 2px;}
+QToolButton:checked {background-color: #3d3d3d;}
+QToolBar::separator {width: 1px; border-left: 1px solid #5d5d5d; max-height: 16px; margin: 2px;}
 QToolTip {background-color: #4d4d4d; border: none; color: #f7f7f7; padding: 1px 2px 1px 2px; border-radius: 3px; font-family: %s;}
 """ % (fontfamily, fontfamily, iconsize, iconsize, fontfamily))
-
         if current is not None: self.hOpen(openfile=current)
         self.update()
         self.show()
@@ -502,11 +559,11 @@ QToolTip {background-color: #4d4d4d; border: none; color: #f7f7f7; padding: 1px 
         action.triggered.connect(function)
         self.actions[shortname] = action
 
-    def CreateTKAction(self, tool: Tools): # A little special toolkit action maker
-        icon = QIcon(GetIcon(tool.name.value))
-        action = QAction(icon, tool.text.value, self)
+    def CreateTKAction(self, name, text): # A little special toolkit action maker
+        icon = QIcon(GetIcon(name))
+        action = QAction(icon, text, self)
         action.setCheckable(True)
-        self.tkactions[tool.name.value] = action
+        self.tkactions[name] = action
 
     def hNew(self): # Handle creation of a new file
         pass
@@ -526,9 +583,13 @@ QToolTip {background-color: #4d4d4d; border: none; color: #f7f7f7; padding: 1px 
             self.loadedImage = LoadImage(fpath, fext)
             self.update()
     def hSave(self): # Handle saving of current file
-        return True
+        if not self.isdirty: return True
+        elif self.loadedImage is None: return self.hSaveAs()
+        else:
+            self.loadedImage.img.save(self.loadedImage.path)
+            return True
     def hSaveAs(self): # Handle saving to a different filename
-        pass
+        return True
     def hZmIn(self): # Handle zooming in
         if self.Zoom * 2 <= zmax: self.ZoomTo(self.Zoom * 2)
         elif self.Zoom < zmax: self.ZoomTo(zmax)
@@ -537,25 +598,54 @@ QToolTip {background-color: #4d4d4d; border: none; color: #f7f7f7; padding: 1px 
         elif self.Zoom > zmin: self.ZoomTo(zmin)
     def hZmFull(self): # Handle zooming to 100%
         self.ZoomTo(1)
+    def hGrid(self, toggled):
+        global gridenabled
+        gridenabled = toggled
+        self.update()
     def hPref(self): # Open the preferences dialog (Preferences)
         prefDialog = Preferences().exec_()
     def update(self): # Custom update function to keep things running smoothly
+        global zoomlevel, tool
+        zoomlevel = self.Zoom
         SaveSettings()
         if self.loadedImage is None: current = None
         else: current = self.loadedImage.path
+        self.isdirty = current is None
         self.actions['zoomin'].setEnabled(self.Zoom < zmax and inDraw())
         self.actions['zoomfull'].setEnabled(self.Zoom != 1 and inDraw())
         self.actions['zoomout'].setEnabled(self.Zoom > zmin and inDraw())
-        self.zoombar.setEnabled(inDraw())
         self.setWindowTitle("%s%s - Contrast" % ("*" if self.isdirty else "", "untitled" if self.loadedImage is None else self.loadedImage.name))
         self.setWindowIcon(QIcon(GetIcon("ucicon")))
         self.setPalette(dark())
         self.setIconSize(QSize(iconsize, iconsize))
-        self.zoombar.update()
+        self.SetTool(tool)
+        try:
+            self.zoombar.setEnabled(inDraw())
+            self.zoombar.update()
+        except: pass
         self.scene.update()
-    @pyqtSlot(bool)
+    #@pyqtSlot(bool)
     def ZoomTo(self, z): # Zoom function
         self.Zoom = z
+        self.update()
+    @pyqtSlot(str)
+    def SetTool(self, stool):
+        global userDeactivatedButton, tool
+        try: self.tkactions[stool]
+        except KeyError: return
+        finally:
+            tool = stool
+            userDeactivatedButton = False
+            for btn in tkbuttons:
+                if btn.isChecked() and btn.name != stool: btn.setChecked(False)
+                elif not btn.isChecked() and btn.name == stool: btn.setChecked(True)
+            userDeactivatedButton = True
+    @pyqtSlot(int, int)
+    def hDragging(self, xpos, ypos):
+        pix = self.view.getPixel(xpos, ypos)
+        if not pix: return
+        if tool == "pencil":
+            self.loadedImage.setPixel(pix[0], pix[1], self.color)
         self.update()
     def closeAccept(self, event):
         global current
